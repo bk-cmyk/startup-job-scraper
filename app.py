@@ -3,56 +3,72 @@ import requests
 import pandas as pd
 import sqlite3
 from database import init_db, save_job
-from googlesearch import search as gsearch  # pip install googlesearch-python
+
+# Try to import, but don't crash the whole app if it's missing
+try:
+    from googlesearch import search as gsearch
+except ImportError:
+    gsearch = None
 
 st.set_page_config(page_title="Ashby Job Tracker", layout="wide")
 init_db()
 
-# --- 1. SEARCH/DISCOVERY LOGIC ---
-def discover_new_slugs(query="site:jobs.ashbyhq.com"):
-    new_slugs = set()
-    # This searches Google for the ashby domain
-    for url in gsearch(query, stop=10):
-        parts = url.split('/')
-        if len(parts) >= 4:
-            slug = parts[3].split('?')[0]
-            if slug not in ['search', 'terms', 'privacy', '']:
-                new_slugs.add(slug)
-    return list(new_slugs)
-
-# --- 2. SIDEBAR ---
+# --- SIDEBAR ---
 st.sidebar.title("Settings")
+company_input = st.sidebar.text_area("Company Slugs", "openai\nnotion\nramp\nvercel")
+companies = [s.strip() for s in company_input.split('\n') if s.strip()]
 
-# Tabs for Organization
-tab1, tab2 = st.tabs(["📋 My List", "🔍 Discovery"])
-
-with tab1:
-    company_input = st.text_area("Known Slugs (one per line)", "openai\nnotion\nramp")
-    companies = [s.strip() for s in company_input.split('\n') if s.strip()]
-
-with tab2:
-    st.write("Find new Ashby users via Google:")
-    if st.button("Search for New Companies"):
-        with st.spinner("Searching Google..."):
-            found_slugs = discover_new_slugs()
-            st.write(f"Found: {', '.join(found_slugs)}")
-            # This appends them to your list automatically
-            companies.extend(found_slugs)
-
-# --- 3. SYNC LOGIC ---
-if st.sidebar.button("🚀 Sync All Jobs"):
-    with st.spinner("Syncing..."):
-        for slug in set(companies): # Use set() to avoid duplicates
+if st.sidebar.button("🔍 Sync Jobs"):
+    with st.spinner("Fetching jobs..."):
+        for slug in companies:
             try:
                 r = requests.get(f"https://api.ashbyhq.com/posting-api/job-board/{slug}")
+                if r.status_code != 200:
+                    st.sidebar.error(f"Could not find company: {slug}")
+                    continue
+                
                 data = r.json()
-                for job in data.get('jobs', []):
-                    # Fixed URL logic to prevent errors
-                    link = job.get('jobPostUrl') or job.get('jobUrl') or f"https://jobs.ashbyhq.com/{slug}/{job['id']}"
-                    save_job(job['id'], slug, job['title'], job['location'], link)
+                jobs_found = data.get('jobs', [])
+                
+                for job in jobs_found:
+                    # FIX: Safely check for different possible URL keys
+                    job_id = job.get('id')
+                    title = job.get('title', 'Unknown Title')
+                    location = job.get('location', 'Remote/Unknown')
+                    
+                    # Ashby sometimes uses 'jobUrl' or 'jobPostUrl'
+                    url = job.get('jobPostUrl') or job.get('jobUrl') or f"https://jobs.ashbyhq.com/{slug}/{job_id}"
+                    
+                    save_job(job_id, slug, title, location, url)
+                    
+                st.sidebar.success(f"Synced {len(jobs_found)} jobs for {slug}")
+                
             except Exception as e:
-                st.sidebar.warning(f"Skipped {slug}: {e}")
-    st.sidebar.success("Sync complete!")
+                st.sidebar.error(f"Error fetching {slug}: {str(e)}")
 
-# --- 4. MAIN DASHBOARD ---
-# (Keep the same display logic from the previous step here)
+# --- DISCOVERY ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("Discovery Mode")
+if st.sidebar.button("Find New Ashby Slugs"):
+    if gsearch:
+        with st.spinner("Searching Google..."):
+            results = [res for res in gsearch("site:jobs.ashbyhq.com", stop=5)]
+            st.sidebar.write("Found these URLs:")
+            for r in results:
+                st.sidebar.caption(r)
+    else:
+        st.sidebar.warning("Install 'googlesearch-python' to use this feature.")
+
+# --- MAIN DASHBOARD ---
+st.title("🚀 Startup Job Tracker")
+conn = sqlite3.connect("jobs.db")
+try:
+    df = pd.read_sql_query("SELECT * FROM jobs ORDER BY first_seen DESC", conn)
+    if not df.empty:
+        st.dataframe(df, use_container_width=True, hide_index=True)
+    else:
+        st.info("No jobs in database yet. Click 'Sync' in the sidebar.")
+except Exception:
+    st.info("Database is initializing...")
+finally:
+    conn.close()
