@@ -51,7 +51,7 @@ with sb_tab1:
 
 with sb_tab2:
     st.write("Find companies using Ashby via Google")
-    search_query = st.text_input("Search Query", "site:jobs.ashbyhq.com software engineer")
+    search_query = st.text_input("Search Query", "site:jobs.ashbyhq.com head of")
     if st.button("🔍 Discover Slugs"):
         with st.spinner("Searching..."):
             found = discover_new_slugs(search_query)
